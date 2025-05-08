@@ -2,6 +2,7 @@ package workerpool
 
 import (
 	"context"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,23 +15,34 @@ const (
 	idleTimeout = 2 * time.Second
 )
 
+// Task represents a unit of work to be executed by the worker pool.
+type Task struct {
+	Fn     func()
+	FnName string
+}
+
 // New creates and starts a pool of worker goroutines.
 //
 // The maxWorkers parameter specifies the maximum number of workers that can
 // execute tasks concurrently. When there are no incoming tasks, workers are
 // gradually stopped until there are no remaining workers.
 func New(maxWorkers int) *WorkerPool {
+	return NewWithMaxRunningTime(maxWorkers, 0)
+}
+
+func NewWithMaxRunningTime(maxWorkers int, maxRunningTime time.Duration) *WorkerPool {
 	// There must be at least one worker.
 	if maxWorkers < 1 {
 		maxWorkers = 1
 	}
 
 	pool := &WorkerPool{
-		maxWorkers:  maxWorkers,
-		taskQueue:   make(chan func()),
-		workerQueue: make(chan func()),
-		stopSignal:  make(chan struct{}),
-		stoppedChan: make(chan struct{}),
+		maxWorkers:     maxWorkers,
+		maxRunningTime: maxRunningTime,
+		taskQueue:      make(chan Task),
+		workerQueue:    make(chan Task),
+		stopSignal:     make(chan struct{}),
+		stoppedChan:    make(chan struct{}),
 	}
 
 	// Start the task dispatcher.
@@ -42,17 +54,18 @@ func New(maxWorkers int) *WorkerPool {
 // WorkerPool is a collection of goroutines, where the number of concurrent
 // goroutines processing requests does not exceed the specified maximum.
 type WorkerPool struct {
-	maxWorkers   int
-	taskQueue    chan func()
-	workerQueue  chan func()
-	stoppedChan  chan struct{}
-	stopSignal   chan struct{}
-	waitingQueue deque.Deque[func()]
-	stopLock     sync.Mutex
-	stopOnce     sync.Once
-	stopped      bool
-	waiting      int32
-	wait         bool
+	maxWorkers     int
+	maxRunningTime time.Duration
+	taskQueue      chan Task
+	workerQueue    chan Task
+	stoppedChan    chan struct{}
+	stopSignal     chan struct{}
+	waitingQueue   deque.Deque[Task]
+	stopLock       sync.Mutex
+	stopOnce       sync.Once
+	stopped        bool
+	waiting        int32
+	wait           bool
 }
 
 // Size returns the maximum number of concurrent workers.
@@ -104,9 +117,9 @@ func (p *WorkerPool) Stopped() bool {
 // period until there are no more idle workers. Since the time to start new
 // goroutines is not significant, there is no need to retain idle workers
 // indefinitely.
-func (p *WorkerPool) Submit(task func()) {
-	if task != nil {
-		p.taskQueue <- task
+func (p *WorkerPool) Submit(fn func(), fnName string) {
+	if fn != nil {
+		p.taskQueue <- Task{Fn: fn, FnName: fnName}
 	}
 }
 
@@ -116,10 +129,10 @@ func (p *WorkerPool) SubmitWait(task func()) {
 		return
 	}
 	doneChan := make(chan struct{})
-	p.taskQueue <- func() {
+	p.taskQueue <- Task{Fn: func() {
 		task()
 		close(doneChan)
-	}
+	}}
 	<-doneChan
 }
 
@@ -155,7 +168,7 @@ func (p *WorkerPool) Pause(ctx context.Context) {
 			case <-ctx.Done():
 			case <-p.stopSignal:
 			}
-		})
+		}, "")
 	}
 	// Wait for workers to all be paused
 	ready.Wait()
@@ -194,7 +207,7 @@ Loop:
 				// Create a new worker, if not at max.
 				if workerCount < p.maxWorkers {
 					wg.Add(1)
-					go worker(task, p.workerQueue, &wg)
+					go worker(task, p.workerQueue, &wg, p.maxRunningTime)
 					workerCount++
 				} else {
 					// Enqueue task to be executed by next available worker.
@@ -223,7 +236,7 @@ Loop:
 
 	// Stop all remaining workers as they become ready.
 	for workerCount > 0 {
-		p.workerQueue <- nil
+		p.workerQueue <- Task{}
 		workerCount--
 	}
 	wg.Wait()
@@ -232,9 +245,25 @@ Loop:
 }
 
 // worker executes tasks and stops when it receives a nil task.
-func worker(task func(), workerQueue chan func(), wg *sync.WaitGroup) {
-	for task != nil {
-		task()
+func worker(task Task, workerQueue chan Task, wg *sync.WaitGroup, maxRunningTime time.Duration) {
+	for task.Fn != nil {
+		done := make(chan struct{})
+		go func(task Task, done chan struct{}) {
+			task.Fn()
+			close(done)
+		}(task, done)
+		if maxRunningTime > 0 {
+			select {
+			case <-done:
+				// Task completed.
+			case <-time.After(maxRunningTime):
+				// Task timed out.
+				// FIXME this will leak a goroutine until the callback completes
+				log.Printf("Timeout waiting for callback to complete: %v", task.FnName)
+			}
+		} else {
+			<-done
+		}
 		task = <-workerQueue
 	}
 	wg.Done()
@@ -281,7 +310,7 @@ func (p *WorkerPool) processWaitingQueue() bool {
 
 func (p *WorkerPool) killIdleWorker() bool {
 	select {
-	case p.workerQueue <- nil:
+	case p.workerQueue <- Task{}:
 		// Sent kill signal to worker.
 		return true
 	default:

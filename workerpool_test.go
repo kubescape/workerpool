@@ -22,7 +22,7 @@ func TestExample(t *testing.T) {
 		r := r
 		wp.Submit(func() {
 			rspChan <- r
-		})
+		}, "")
 	}
 
 	wp.StopWait()
@@ -66,7 +66,7 @@ func TestMaxWorkers(t *testing.T) {
 		wp.Submit(func() {
 			started <- struct{}{}
 			<-release
-		})
+		}, "")
 	}
 
 	// Wait for all queued tasks to be dispatched to workers.
@@ -97,7 +97,7 @@ func TestReuseWorkers(t *testing.T) {
 
 	// Cause worker to be created, and available for reuse before next task.
 	for i := 0; i < 10; i++ {
-		wp.Submit(func() { <-release })
+		wp.Submit(func() { <-release }, "")
 		release <- struct{}{}
 		time.Sleep(time.Millisecond)
 	}
@@ -182,7 +182,7 @@ func TestStop(t *testing.T) {
 		wp.Submit(func() {
 			<-release
 			finished <- struct{}{}
-		})
+		}, "")
 	}
 
 	// Call Stop() and see that only the already running tasks were completed.
@@ -220,7 +220,7 @@ func TestStopWait(t *testing.T) {
 		wp.Submit(func() {
 			<-release
 			finished <- struct{}{}
-		})
+		}, "")
 	}
 
 	// Call StopWait() and see that all tasks were completed.
@@ -264,14 +264,14 @@ func TestSubmitWait(t *testing.T) {
 	defer wp.Stop()
 
 	// Check that these are noop.
-	wp.Submit(nil)
+	wp.Submit(nil, "")
 	wp.SubmitWait(nil)
 
 	done1 := make(chan struct{})
 	wp.Submit(func() {
 		time.Sleep(100 * time.Millisecond)
 		close(done1)
-	})
+	}, "")
 	select {
 	case <-done1:
 		t.Fatal("Submit did not return immediately")
@@ -299,7 +299,7 @@ func TestOverflow(t *testing.T) {
 
 	// Start workers, and have them all wait on a channel before completing.
 	for i := 0; i < 64; i++ {
-		wp.Submit(func() { <-releaseChan })
+		wp.Submit(func() { <-releaseChan }, "")
 	}
 
 	// Start a goroutine to free the workers after calling stop.  This way
@@ -335,7 +335,7 @@ func TestStopRace(t *testing.T) {
 		wp.Submit(func() {
 			started.Done()
 			<-workRelChan
-		})
+		}, "")
 	}
 
 	started.Wait()
@@ -389,7 +389,7 @@ func TestWaitingQueueSizeRace(t *testing.T) {
 			for i := 0; i < tasks; i++ {
 				wp.Submit(func() {
 					time.Sleep(time.Microsecond)
-				})
+				}, "")
 				waiting := wp.WaitingQueueSize()
 				if waiting > max {
 					max = waiting
@@ -427,7 +427,7 @@ func TestPause(t *testing.T) {
 	wp.Submit(func() {
 		time.Sleep(time.Millisecond)
 		close(ran)
-	})
+	}, "")
 
 	wp.Pause(ctx)
 
@@ -441,7 +441,7 @@ func TestPause(t *testing.T) {
 	ran = make(chan struct{})
 	wp.Submit(func() {
 		close(ran)
-	})
+	}, "")
 
 	// Check that a new task did not run while paused
 	select {
@@ -538,7 +538,7 @@ func TestPause(t *testing.T) {
 	ran = make(chan struct{})
 	wp.Submit(func() {
 		close(ran)
-	})
+	}, "")
 
 	stopDone := make(chan struct{})
 	go func() {
@@ -590,7 +590,7 @@ func TestWorkerLeak(t *testing.T) {
 	for i := 0; i < workerCount; i++ {
 		wp.Submit(func() {
 			time.Sleep(time.Millisecond)
-		})
+		}, "")
 	}
 
 	// If wp..Stop() is not waiting for all workers to complete, then goleak
@@ -600,9 +600,9 @@ func TestWorkerLeak(t *testing.T) {
 
 func anyReady(w *WorkerPool) bool {
 	release := make(chan struct{})
-	wait := func() {
+	wait := Task{Fn: func() {
 		<-release
-	}
+	}}
 	select {
 	case w.workerQueue <- wait:
 		close(release)
@@ -616,9 +616,9 @@ func countReady(w *WorkerPool) int {
 	// Try to stop max workers.
 	timeout := time.After(100 * time.Millisecond)
 	release := make(chan struct{})
-	wait := func() {
+	wait := Task{Fn: func() {
 		<-release
-	}
+	}}
 	var readyCount int
 	for i := 0; i < max; i++ {
 		select {
@@ -648,7 +648,7 @@ func BenchmarkEnqueue(b *testing.B) {
 
 	// Start workers, and have them all wait on a channel before completing.
 	for i := 0; i < b.N; i++ {
-		wp.Submit(func() { <-releaseChan })
+		wp.Submit(func() { <-releaseChan }, "")
 	}
 	close(releaseChan)
 }
@@ -663,7 +663,7 @@ func BenchmarkEnqueue2(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		releaseChan := make(chan struct{})
 		for i := 0; i < 64; i++ {
-			wp.Submit(func() { <-releaseChan })
+			wp.Submit(func() { <-releaseChan }, "")
 		}
 		close(releaseChan)
 	}
@@ -707,7 +707,7 @@ func benchmarkExecWorkers(n int, b *testing.B) {
 			wp.Submit(func() {
 				//time.Sleep(100 * time.Microsecond)
 				allDone.Done()
-			})
+			}, "")
 		}
 	}
 	allDone.Wait()
