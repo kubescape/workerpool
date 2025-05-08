@@ -1,4 +1,4 @@
-module github.com/gammazero/workerpool
+module github.com/kubescape/workerpool
 
 go 1.22
 

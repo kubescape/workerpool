@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gammazero/workerpool"
+	"github.com/kubescape/workerpool"
 )
 
 func TestPacedWorkers(t *testing.T) {
