@@ -17,5 +17,13 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
+      # Match the module's Go version; the legacy linter cannot read newer export data.
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v2
+        with:
+          version: v1.64.8
+          skip-go-installation: true
